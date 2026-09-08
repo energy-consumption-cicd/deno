@@ -22,8 +22,9 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       "clang-22=${LLVM_VERSION}" "lld-22=${LLVM_VERSION}" \
       "clang-tools-22=${LLVM_VERSION}" "clang-format-22=${LLVM_VERSION}" \
-      "clang-tidy-22=${LLVM_VERSION}" "libclang-22-dev=${LLVM_VERSION}"; \
-    rm -rf /var/lib/apt/lists/*
+      "clang-tidy-22=${LLVM_VERSION}" "libclang-22-dev=${LLVM_VERSION}"
+# The package lists stay: the sysroot step's apt-get remove lines (verbatim in
+# commands.sh) exit 100 without an index, and the hosted runner has one.
 
 # The hosted runner executes the job as `runner` with passwordless sudo; the
 # sysroot step (ci.generated.yml:5299-5388) calls sudo on every privileged line.
