@@ -104,6 +104,17 @@ RUN set -eux; \
     test -x "$d/lib/tsc"; \
     rm -f /tmp/tsc.tgz
 
+# The test harness downloads this esbuild binary when it starts the local npm
+# registries (tests/util/server/servers/npm_registry.rs:536-560) and aborts
+# every test crate if it cannot; the path is the one it checks first.
+ARG ESBUILD_SHA256=3331e0b23c99d93d9a39e436a4838de40ca1c95ac3bcbd9874ba169d8545b634
+RUN set -eux; \
+    mkdir -p third_party/prebuilt/linux64; \
+    curl -fsSL -o third_party/prebuilt/linux64/esbuild-x64 \
+      "https://raw.githubusercontent.com/denoland/deno_third_party/d074edee0f4199f8226e1f87b88ccb7956d94454/prebuilt/linux64/esbuild-x64"; \
+    echo "${ESBUILD_SHA256}  third_party/prebuilt/linux64/esbuild-x64" | sha256sum -c -; \
+    chmod 0755 third_party/prebuilt/linux64/esbuild-x64
+
 # Job-level env (ci.generated.yml:5217-5219); CI is set by Actions in every job
 # and read by test_util::IS_CI (tests/util/lib/lib.rs:61).
 ENV CI=true \

@@ -50,6 +50,7 @@ and no others:
 | D-8 | `CI=true` in the image | Actions sets it in every job; `test_util::IS_CI` reads it |
 | D-9 | upload/download-artifact become a copy through a per-run volume | each stage runs in its own `--rm` container |
 | D-10 | `tests/integration/npm_tests.rs:819` (`lock_file_lock_write`) and `tests/unit_node/tls_test.ts:712` reach external hosts and fail under `--network none`; the test stage exits 101 by pre-registration | no switch disables them without editing the upstream |
+| D-12 | the `esbuild-x64` binary the test harness fetches when it starts its local npm registries (`tests/util/server/servers/npm_registry.rs:536-560`) is fetched at image build, sha256-verified, at the path the harness checks | without it the harness aborts every test crate under `--network none` |
 | — | `Check QuickJS backend` (`:5399-5402`) is not run | `cargo check` of an alternative backend absent from the measured binary |
 | — | `GITHUB_ENV` writes are re-exported by `commands.sh` | a container has no runner to do it |
 
@@ -70,5 +71,6 @@ bench is then not idle.
 
 Both stages run under `--network none`. Every artifact the jobs fetch is
 resolved at image build and verified by sha256: crates, the V8 static library,
-the sysroot tarball, the TypeScript compiler package, rustup, Rust and Node.
+the sysroot tarball, the TypeScript compiler package, the harness's esbuild
+binary, rustup, Rust and Node.
 The test registries the suites use bind loopback ports 4260-4265.
