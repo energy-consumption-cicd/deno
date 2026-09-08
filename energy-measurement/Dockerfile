@@ -85,8 +85,11 @@ RUN set -eux; \
 
 # The crate cache the job restores (ci.generated.yml:5232-5244) holds
 # registry/index and registry/cache, not registry/src: unpacking stays in the stage.
+# tests/sqlite_extension is excluded from the workspace and built by the
+# integration suite at test time (tests/integration/sqlite_extension_tests.rs:17-38).
 RUN set -eux; \
     cargo fetch --locked; \
+    cargo fetch --locked --manifest-path tests/sqlite_extension/Cargo.toml; \
     rm -rf /home/runner/.cargo/registry/src
 
 # The native TypeScript compiler deno fetches during the test job
