@@ -222,9 +222,11 @@ abort_stage_timeout() {
   local abort_utc kill_result marker last_line last_utc
   abort_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if docker kill "$cname" >/dev/null 2>&1; then kill_result="ok"; else kill_result="no-such-container"; fi
+  docker rm -f "$cname" >/dev/null 2>&1 || true
   CURRENT_CONTAINER=""
-  marker=$(grep -E '^=== cargo test --test .*: start ' "$stage_log" 2>/dev/null | tail -n 1)
-  last_line=$(tail -n 1 "$stage_log" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | cut -c1-200)
+  # Every lookup below may legitimately find nothing; none may trip errexit.
+  marker=$(grep -E '^=== cargo test --test .*: start ' "$stage_log" 2>/dev/null | tail -n 1 || true)
+  last_line=$(tail -n 1 "$stage_log" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | cut -c1-200 || true)
   last_utc=$(date -u -r "$stage_log" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "-")
   {
     echo "run,$RUN_NUM"
