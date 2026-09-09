@@ -204,50 +204,78 @@ jobs:
             return 0
           }
 
-          # Discarded warm-up convention: 11 runs, median over the 10 valid
-          # ones. The cold cargo build unpacks ~1100 crates and writes target/,
-          # so one warm-up settles the page cache of the image layers.
-          echo "::group::Warm-up (discarded from analysis)"
-          mkdir -p "$RESULTS_DIR/warmup"
-          WARMUP_EXIT=0
-          T_INI=$(now_utc)
-          bash "$PIPELINE" 0 || WARMUP_EXIT=$?
-          echo "00,$T_INI,$(now_utc),$WARMUP_EXIT,warmup" >> "$ORDER"
-          if [ "$WARMUP_EXIT" -eq 90 ]; then
-            echo "::error title=Baseline gate::warm-up not started: idle package rate above the pre-registered 1.0 W - campaign aborted. See runs/discarded_baseline_run_00.txt"
-            mv -f "$RESULTS_DIR/discarded_baseline_run_00.txt" "$RESULTS_DIR/warmup/discarded_baseline_run_warmup.txt" 2>/dev/null || true
-            exit 1
-          fi
-          if [ ! -f "$RESULTS_DIR/run_00.csv" ]; then
-            echo "::error title=Measurement failure::warm-up: run_pipeline.sh (exit=$WARMUP_EXIT) did not write run_00.csv - measurement failure, aborting the campaign"
-            exit 1
-          fi
-          mv -f "$RESULTS_DIR/run_00.csv" "$RESULTS_DIR/warmup/run_warmup.csv"
-          if [ -f "$RESULTS_DIR/exit_codes_run_00.txt" ]; then
-            mv -f "$RESULTS_DIR/exit_codes_run_00.txt" \
-                  "$RESULTS_DIR/warmup/exit_codes_run_warmup.txt"
-          fi
-          if [ "$WARMUP_EXIT" -ne "$EXPECTED_EXIT" ]; then
-            echo "::warning title=Unexpected exit code::warm-up: run_pipeline.sh exited $WARMUP_EXIT; pre-registered $EXPECTED_EXIT. Warm-up is discarded data; the campaign continues"
-          fi
-          warn_user_sys "$RESULTS_DIR/warmup/run_warmup.csv" "warm-up"
-          {
-            echo "## Warm-up executed and DISCARDED (not in the median)"
-            echo "- CSV at \`runs/warmup/run_warmup.csv\` (overwritten each session)"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "::endgroup::"
-          echo "Post-warm-up rest (120s)..."
-          sleep 120
-
           # EMENDA-4: a run that produced no valid CSV is substituted, not fatal.
-          # Attempts keep their own number; the campaign ends at 10 valid runs or
-          # at the third substitution, which invalidates it.
+          # The counters cover the warm-up too: an abort there is the same
+          # bench/harness evidence, so it consumes one of the two substitutions.
           MAX_VALID=10
           MAX_SUBSTITUTIONS=2
           VALID_RUNS=""
           VALID_COUNT=0
           SUBSTITUTIONS=0
           SUBSTITUTION_REASONS=""
+
+          # Discarded warm-up convention: 11 runs, median over the 10 valid
+          # ones. The cold cargo build unpacks ~1100 crates and writes target/,
+          # so one warm-up settles the page cache of the image layers.
+          mkdir -p "$RESULTS_DIR/warmup"
+          WARMUP_DONE=0
+          WARMUP_ATTEMPT=0
+          while [ "$WARMUP_DONE" -eq 0 ]; do
+            WARMUP_ATTEMPT=$((WARMUP_ATTEMPT + 1))
+            echo "::group::Warm-up attempt $WARMUP_ATTEMPT (discarded from analysis)"
+            WARMUP_EXIT=0
+            T_INI=$(now_utc)
+            bash "$PIPELINE" 0 || WARMUP_EXIT=$?
+            echo "00,$T_INI,$(now_utc),$WARMUP_EXIT,warmup" >> "$ORDER"
+            REASON=""
+            if [ "$WARMUP_EXIT" -eq 90 ]; then
+              REASON="baseline gate (exit 90), see runs/warmup/discarded_baseline_run_warmup_${WARMUP_ATTEMPT}.txt"
+              mv -f "$RESULTS_DIR/discarded_baseline_run_00.txt" "$RESULTS_DIR/warmup/discarded_baseline_run_warmup_${WARMUP_ATTEMPT}.txt" 2>/dev/null || true
+            elif [ "$WARMUP_EXIT" -eq 91 ]; then
+              REASON="stage ceiling (exit 91), see runs/warmup/discarded_timeout_run_warmup_${WARMUP_ATTEMPT}.txt"
+              mv -f "$RESULTS_DIR/discarded_timeout_run_00.txt" "$RESULTS_DIR/warmup/discarded_timeout_run_warmup_${WARMUP_ATTEMPT}.txt" 2>/dev/null || true
+              mv -f "$RESULTS_DIR/exit_codes_run_00.txt" "$RESULTS_DIR/warmup/exit_codes_run_warmup_${WARMUP_ATTEMPT}_discarded.txt" 2>/dev/null || true
+            elif [ ! -f "$RESULTS_DIR/run_00.csv" ]; then
+              REASON="missing CSV (pipeline exit $WARMUP_EXIT), see runs/warmup/discarded_invalid_run_warmup_${WARMUP_ATTEMPT}.txt"
+              printf 'run,00\nattempt,%s\ntimestamp_utc,%s\npipeline_exit,%s\nreason,run_00.csv not written\n' "$WARMUP_ATTEMPT" "$(now_utc)" "$WARMUP_EXIT" > "$RESULTS_DIR/warmup/discarded_invalid_run_warmup_${WARMUP_ATTEMPT}.txt"
+            fi
+            if [ -n "$REASON" ]; then
+              SUBSTITUTIONS=$((SUBSTITUTIONS + 1))
+              SUBSTITUTION_REASONS="${SUBSTITUTION_REASONS:+$SUBSTITUTION_REASONS; }warm-up attempt $WARMUP_ATTEMPT: $REASON"
+              if [ "$SUBSTITUTIONS" -gt "$MAX_SUBSTITUTIONS" ]; then
+                echo "::error title=Campaign invalid::warm-up attempt $WARMUP_ATTEMPT discarded ($REASON) - substitution $SUBSTITUTIONS exceeds the pre-registered limit of $MAX_SUBSTITUTIONS. Campaign ended as INVALID. Reasons: $SUBSTITUTION_REASONS"
+                echo "- **Campaign INVALID** - $SUBSTITUTIONS substitutions exceed the limit of $MAX_SUBSTITUTIONS before any valid run. Reasons: $SUBSTITUTION_REASONS" >> "$GITHUB_STEP_SUMMARY"
+                echo "::endgroup::"
+                exit 1
+              fi
+              echo "::warning title=Warm-up substituted::warm-up attempt $WARMUP_ATTEMPT discarded ($REASON) - substitution $SUBSTITUTIONS of $MAX_SUBSTITUTIONS; the warm-up is repeated"
+              echo "- Warm-up attempt $WARMUP_ATTEMPT: **DISCARDED** ($REASON) - substitution $SUBSTITUTIONS of $MAX_SUBSTITUTIONS" >> "$GITHUB_STEP_SUMMARY"
+              echo "::endgroup::"
+              echo "Rest before the substitute warm-up (120s)..."
+              sleep 120
+              continue
+            fi
+            WARMUP_DONE=1
+            mv -f "$RESULTS_DIR/run_00.csv" "$RESULTS_DIR/warmup/run_warmup.csv"
+            if [ -f "$RESULTS_DIR/exit_codes_run_00.txt" ]; then
+              mv -f "$RESULTS_DIR/exit_codes_run_00.txt" \
+                    "$RESULTS_DIR/warmup/exit_codes_run_warmup.txt"
+            fi
+            if [ "$WARMUP_EXIT" -ne "$EXPECTED_EXIT" ]; then
+              echo "::warning title=Unexpected exit code::warm-up: run_pipeline.sh exited $WARMUP_EXIT; pre-registered $EXPECTED_EXIT. Warm-up is discarded data; the campaign continues"
+            fi
+            warn_user_sys "$RESULTS_DIR/warmup/run_warmup.csv" "warm-up"
+            {
+              echo "## Warm-up executed and DISCARDED (not in the median)"
+              echo "- CSV at \`runs/warmup/run_warmup.csv\` (overwritten each session)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::endgroup::"
+          done
+          echo "Post-warm-up rest (120s)..."
+          sleep 120
+
+          # Attempts keep their own number; the campaign ends at 10 valid runs or
+          # at the third substitution, which invalidates it.
           echo "## Execution (full mode) - every run executed in this session" >> "$GITHUB_STEP_SUMMARY"
           i=0
           while [ "$VALID_COUNT" -lt "$MAX_VALID" ]; do
