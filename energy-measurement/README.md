@@ -62,10 +62,18 @@ gh workflow run energy-measurement.yml -f campaign=validation
 gh workflow run energy-measurement.yml -f campaign=full
 ```
 
-`validation` runs run 0 only. `full` runs a discarded warm-up plus runs 1..10 and
-writes the medians. Each run rests 120 s to measure the idle baseline; an idle
-package rate above 1.0 W aborts the run before any stage (exit 90), since the
-bench is then not idle.
+`validation` runs run 0 only. `full` runs a discarded warm-up and then numbered
+runs until 10 valid ones exist, and writes the medians. Each run rests 120 s to
+measure the idle baseline; an idle package rate above 1.0 W aborts the run before
+any stage (exit 90), since the bench is then not idle. Each stage runs under a
+wall-clock ceiling (build 1000 s, test 3600 s, about 1.5x the largest wall
+observed); a stage that reaches it is killed with its container and the run
+exits 91 without a CSV, since a hung harness is not a measurement. A run that
+produced no valid CSV (exit 90, 91, or otherwise) is substituted by the next
+number, at most twice per campaign; a third substitution ends the campaign as
+invalid. Every discarded run leaves a `runs/discarded_<reason>_run_NN.txt`
+sidecar and a line in `runs/execution_order.txt`. Exits 90 and 91 sit outside
+the workload's exit-code list.
 
 ## Network
 

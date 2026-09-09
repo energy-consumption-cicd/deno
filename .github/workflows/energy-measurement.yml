@@ -93,6 +93,12 @@ jobs:
             mv -f "$RESULTS_DIR/discarded_baseline_run_00.txt" "$RESULTS_DIR/validation/" 2>/dev/null || true
             exit 1
           fi
+          if [ "$PIPELINE_EXIT" -eq 91 ]; then
+            echo "::error title=Stage ceiling::run 0 aborted: a stage exceeded its pre-registered ceiling. See runs/discarded_timeout_run_00.txt"
+            mkdir -p "$RESULTS_DIR/validation"
+            mv -f "$RESULTS_DIR/discarded_timeout_run_00.txt" "$RESULTS_DIR/validation/" 2>/dev/null || true
+            exit 1
+          fi
 
           # Run 0 is a smoke test; keep it out of the median aggregation glob.
           mkdir -p "$RESULTS_DIR/validation"
@@ -135,11 +141,11 @@ jobs:
           # A campaign is one continuous session under one set of bench
           # conditions; adopting a CSV written by an earlier session mixes them.
           EXISTING=""
-          for i in $(seq 1 10); do
-            NN=$(printf '%02d' "$i")
-            if [ -f "$RESULTS_DIR/run_${NN}.csv" ]; then
-              EXISTING="${EXISTING:+$EXISTING }$NN"
-            fi
+          for f in "$RESULTS_DIR"/run_[0-9][0-9].csv; do
+            [ -f "$f" ] || continue
+            NN=$(basename "$f" .csv); NN=${NN#run_}
+            [ "$NN" = "00" ] && continue
+            EXISTING="${EXISTING:+$EXISTING }$NN"
           done
           if [ -n "$EXISTING" ]; then
             echo "::error title=Results directory not empty::run CSV(s) already present: $EXISTING. A campaign is a single continuous session - every run must come from the same bench conditions, so no pre-existing result is ever reused. Archive the previous results under runs/discarded_<reason>_<date>/ and dispatch again."
@@ -152,7 +158,7 @@ jobs:
 
           ORDER="$RESULTS_DIR/execution_order.txt"
           if [ ! -f "$ORDER" ]; then
-            echo "# actual execution order (append-only) - run,start_utc,end_utc,exit,origin" > "$ORDER"
+            echo "# actual execution order (append-only) - run,start_utc,end_utc,exit,origin; exits 90 (baseline gate) and 91 (stage ceiling) are bench/protocol, not workload" > "$ORDER"
           fi
           now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -233,56 +239,102 @@ jobs:
           echo "Post-warm-up rest (120s)..."
           sleep 120
 
+          # EMENDA-4: a run that produced no valid CSV is substituted, not fatal.
+          # Attempts keep their own number; the campaign ends at 10 valid runs or
+          # at the third substitution, which invalidates it.
+          MAX_VALID=10
+          MAX_SUBSTITUTIONS=2
+          VALID_RUNS=""
+          VALID_COUNT=0
+          SUBSTITUTIONS=0
+          SUBSTITUTION_REASONS=""
           echo "## Execution (full mode) - every run executed in this session" >> "$GITHUB_STEP_SUMMARY"
-          for i in $(seq 1 10); do
+          i=0
+          while [ "$VALID_COUNT" -lt "$MAX_VALID" ]; do
+            i=$((i + 1))
             NN=$(printf '%02d' "$i")
             CSV="$RESULTS_DIR/run_${NN}.csv"
-            echo "::group::Run $i of 10"
+            echo "::group::Run $NN (valid so far: $VALID_COUNT of $MAX_VALID, substitutions: $SUBSTITUTIONS of $MAX_SUBSTITUTIONS)"
             echo "Run $NN - executing"
-            echo "- Run $NN: **executed**" >> "$GITHUB_STEP_SUMMARY"
             RUN_EXIT=0
             T_INI=$(now_utc)
             bash "$PIPELINE" "$i" || RUN_EXIT=$?
             echo "$NN,$T_INI,$(now_utc),$RUN_EXIT,campaign" >> "$ORDER"
+
+            REASON=""
             if [ "$RUN_EXIT" -eq 90 ]; then
-              echo "::error title=Baseline gate::run $NN not started: idle package rate above the pre-registered 1.0 W - campaign aborted. See runs/discarded_baseline_run_${NN}.txt"
-              echo "- Run $NN: **NOT STARTED** (baseline gate, exit 90) - campaign aborted" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
+              REASON="baseline gate (exit 90), see runs/discarded_baseline_run_${NN}.txt"
+            elif [ "$RUN_EXIT" -eq 91 ]; then
+              REASON="stage ceiling (exit 91), see runs/discarded_timeout_run_${NN}.txt"
+            elif ! validate_csv "$CSV"; then
+              REASON="missing or invalid CSV (pipeline exit $RUN_EXIT), see runs/discarded_invalid_run_${NN}.txt"
+              {
+                echo "run,$NN"
+                echo "timestamp_utc,$(now_utc)"
+                echo "pipeline_exit,$RUN_EXIT"
+                echo "csv_present,$([ -f "$CSV" ] && echo yes || echo no)"
+                echo "reason,CSV missing or invalid (3 stages with positive energy_pkg_j, energy_cores_j, wall_time_s required)"
+              } > "$RESULTS_DIR/discarded_invalid_run_${NN}.txt"
+              # An invalid CSV must not reach the median glob; kept for audit.
+              if [ -f "$CSV" ]; then
+                mkdir -p "$RESULTS_DIR/invalid"
+                mv -f "$CSV" "$RESULTS_DIR/invalid/run_${NN}.csv"
+                [ -f "$RESULTS_DIR/exit_codes_run_${NN}.txt" ] && mv -f "$RESULTS_DIR/exit_codes_run_${NN}.txt" "$RESULTS_DIR/invalid/"
+              fi
             fi
+
+            if [ -n "$REASON" ]; then
+              SUBSTITUTIONS=$((SUBSTITUTIONS + 1))
+              SUBSTITUTION_REASONS="${SUBSTITUTION_REASONS:+$SUBSTITUTION_REASONS; }run $NN: $REASON"
+              if [ "$SUBSTITUTIONS" -gt "$MAX_SUBSTITUTIONS" ]; then
+                echo "::error title=Campaign invalid::run $NN discarded ($REASON) - substitution $SUBSTITUTIONS exceeds the pre-registered limit of $MAX_SUBSTITUTIONS. Campaign ended as INVALID with $VALID_COUNT valid runs. Reasons: $SUBSTITUTION_REASONS"
+                echo "- Run $NN: **DISCARDED** ($REASON)" >> "$GITHUB_STEP_SUMMARY"
+                echo "- **Campaign INVALID** - $SUBSTITUTIONS substitutions exceed the limit of $MAX_SUBSTITUTIONS; $VALID_COUNT valid runs. Reasons: $SUBSTITUTION_REASONS" >> "$GITHUB_STEP_SUMMARY"
+                echo "::endgroup::"
+                exit 1
+              fi
+              echo "::warning title=Run substituted::run $NN discarded ($REASON) - substitution $SUBSTITUTIONS of $MAX_SUBSTITUTIONS; the campaign continues with run $(printf '%02d' $((i + 1)))"
+              echo "- Run $NN: **DISCARDED** ($REASON) - substitution $SUBSTITUTIONS of $MAX_SUBSTITUTIONS" >> "$GITHUB_STEP_SUMMARY"
+              echo "::endgroup::"
+              echo "Rest before the substitute run (120s)..."
+              sleep 120
+              continue
+            fi
+
+            VALID_RUNS="${VALID_RUNS:+$VALID_RUNS }$NN"
+            VALID_COUNT=$((VALID_COUNT + 1))
+            echo "- Run $NN: **executed** (valid $VALID_COUNT of $MAX_VALID)" >> "$GITHUB_STEP_SUMMARY"
             warn_user_sys "$CSV" "run $NN"
-            if ! validate_csv "$CSV"; then
-              echo "::error title=Measurement failure::run $NN: CSV missing or invalid after the pipeline (exit=$RUN_EXIT). Energy/wall unusable - aborting the campaign"
-              echo "- Run $NN: **MEASUREMENT FAILURE** (pipeline exit=$RUN_EXIT) - campaign aborted" >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
             if [ "$RUN_EXIT" -ne "$EXPECTED_EXIT" ]; then
-              echo "::warning title=Unexpected exit code::run $NN: run_pipeline.sh exited $RUN_EXIT; pre-registered $EXPECTED_EXIT. Run to REJECT and REPLACE per the declared exit-code list"
-              echo "- Run $NN: workload exit=$RUN_EXIT - **outside the declared list ($EXPECTED_EXIT)**. Run to REJECT and REPLACE; CSV preserved" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning title=Unexpected exit code::run $NN: run_pipeline.sh exited $RUN_EXIT; pre-registered $EXPECTED_EXIT. Run to REJECT per the declared exit-code list; CSV preserved"
+              echo "- Run $NN: workload exit=$RUN_EXIT - **outside the declared list ($EXPECTED_EXIT)**. Run to REJECT per the declared exit-code list; CSV preserved" >> "$GITHUB_STEP_SUMMARY"
             fi
             echo "::endgroup::"
-            if [ "$i" -lt 10 ]; then
+            if [ "$VALID_COUNT" -lt "$MAX_VALID" ]; then
               echo "Rest between runs (120s)..."
               sleep 120
             fi
           done
 
+          echo "## Substitutions: $SUBSTITUTIONS of $MAX_SUBSTITUTIONS${SUBSTITUTION_REASONS:+ - $SUBSTITUTION_REASONS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Valid runs: $VALID_RUNS (substitutions: $SUBSTITUTIONS)"
+
           # Final sweep: re-emits every warning of the session as one block for review.
-          for i in $(seq 1 10); do
-            NN=$(printf '%02d' "$i")
+          for NN in $VALID_RUNS; do
             warn_user_sys "$RESULTS_DIR/run_${NN}.csv" "run $NN"
           done
 
           INVALID=""
-          for i in $(seq 1 10); do
-            NN=$(printf '%02d' "$i")
+          for NN in $VALID_RUNS; do
             validate_csv "$RESULTS_DIR/run_${NN}.csv" || INVALID="${INVALID:+$INVALID }$NN"
           done
-          if [ -n "$INVALID" ]; then
-            echo "::error title=Incomplete campaign::runs with missing or invalid CSV: $INVALID - medians will NOT be computed"
-            echo "- **Incomplete campaign** - invalid runs: $INVALID" >> "$GITHUB_STEP_SUMMARY"
+          N_CSV=$(ls "$RESULTS_DIR"/run_[0-9][0-9].csv 2>/dev/null | wc -l)
+          if [ -n "$INVALID" ] || [ "$VALID_COUNT" -ne "$MAX_VALID" ] || [ "$N_CSV" -ne "$MAX_VALID" ]; then
+            echo "::error title=Incomplete campaign::valid runs: $VALID_COUNT of $MAX_VALID; CSVs in runs/: $N_CSV; invalid: ${INVALID:-none} - medians will NOT be computed"
+            echo "- **Incomplete campaign** - valid runs $VALID_COUNT of $MAX_VALID, CSVs $N_CSV, invalid: ${INVALID:-none}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          echo "10 runs with valid CSVs - aggregate.py precondition satisfied"
+          echo "$MAX_VALID runs with valid CSVs ($VALID_RUNS) - aggregate.py precondition satisfied"
 
       - name: Aggregate medians
         if: ${{ inputs.campaign == 'full' }}
@@ -319,7 +371,7 @@ jobs:
           [ -f "$SRC/summary.csv" ] && cp "$SRC/summary.csv" "$DST/" || true
           if [ -d "$SRC/runs" ]; then
             ( cd "$SRC/runs" && find . \
-                \( -name 'run_*.csv' -o -name 'exit_codes_run_*.txt' -o -name 'execution_order.txt' -o -name 'discarded_baseline_run_*.txt' \) \
+                \( -name 'run_*.csv' -o -name 'exit_codes_run_*.txt' -o -name 'execution_order.txt' -o -name 'discarded_*_run_*.txt' \) \
                 -exec cp --parents {} "$DST/runs/" \; ) || true
           fi
           if [ -d "$SRC/logs" ]; then
