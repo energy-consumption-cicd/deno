@@ -24,8 +24,9 @@ ENERGY_BASELINE_GATE="${ENERGY_BASELINE_GATE:-on}"
 # 15 s; exit 91 sits outside every declared workload exit code, like 90.
 # Non-default values are for declared diagnostic sessions only and are recorded
 # in the sidecar.
-STAGE_TIMEOUT_BUILD_DEFAULT=882
-STAGE_TIMEOUT_TEST_DEFAULT=1920
+# Addendum 2026-10-04: ceilings recomputed by the single ceiling rule, the larger of 1.5 times and 15 s above the largest known wall of the stage (rehearsal, local test, validations, HEAD runs of the same cut).
+STAGE_TIMEOUT_BUILD_DEFAULT=979
+STAGE_TIMEOUT_TEST_DEFAULT=2120
 ENERGY_STAGE_TIMEOUT_BUILD_S="${ENERGY_STAGE_TIMEOUT_BUILD_S:-$STAGE_TIMEOUT_BUILD_DEFAULT}"
 ENERGY_STAGE_TIMEOUT_TEST_S="${ENERGY_STAGE_TIMEOUT_TEST_S:-$STAGE_TIMEOUT_TEST_DEFAULT}"
 STAGE_TIMEOUT_EXIT=91
