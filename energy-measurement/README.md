@@ -49,7 +49,7 @@ and no others:
 | D-7 | the container runs as `runner` with passwordless sudo, checkout at `/home/runner/work/deno/deno` | the sysroot step binds `/home` into the chroot |
 | D-8 | `CI=true` in the image | Actions sets it in every job; the test harness reads it |
 | D-9 | the build stage copies `target/` to a per-run volume and the test stage copies it back, the mechanism the earlier release branches use for their binaries, and the test container repeats the sysroot step | the two steps share one job and one filesystem; each stage runs in its own `--rm` container |
-| D-10 | tests that reach external hosts fail under `--network none`: 7 tests of the `integration` target fail in the rehearsal (`node_unit_tests::{dns,http2,net,tls}_test`, `npm::lock_file_lock_write`, `check::ts_no_recheck_on_redirect`, `repl::pty_complete_imports_no_panic_empty_specifier`), the same ids in both repetitions, and `cargo test` stops after that target, so `specs`, `node_compat_tests` and the doctests do not run; the test stage exits 101 by pre-registration. `cargo test` stops at the first test target that fails, as the literal command does | no switch disables them without editing the upstream |
+| D-10 | tests that reach external hosts fail under `--network none`: 7 tests of the `integration` target fail in the rehearsal (`node_unit_tests::{dns,http2,net,tls}_test`, `npm::lock_file_lock_write`, `check::ts_no_recheck_on_redirect`, `repl::pty_complete_imports_no_panic_empty_specifier`), and 12 tests of the `specs` target (`specs::cert::*_unsafe_ssl`, `specs::run::_017_import_redirect*`, `specs::upgrade::*`), the same ids in both repetitions; the test stage exits 101 by pre-registration. `cargo test` runs with `--no-fail-fast`, the one addition to the literal command: without it the stage would stop after `integration` and skip `specs`, `node_compat_tests`, the remaining unit tests and the doctests, which the hosted job runs | no switch disables them without editing the upstream |
 | D-12 | the `esbuild-x64` binary the test harness fetches when it starts its local npm registries (`tests/util/server/src/servers/npm_registry.rs:391-429`) is fetched at image build, sha256-verified, at the path the harness checks | without it the harness aborts every test target under `--network none` |
 | D-14 | `.ms-playwright` (chromium and chromium-headless-shell 1148 of the tag's `playwright-core` 1.49.1) is installed at image build from sha256-verified archives, with the system libraries playwright lists for Ubuntu 24.04 | the job restores that directory from its cache (`:388-393`), and `npm/playwright_compat` runs at this tag |
 | - | `GITHUB_ENV` writes are re-exported by `commands.sh` | a container has no runner to do it |
@@ -67,7 +67,7 @@ gh workflow run energy-measurement.yml --ref release-2.6.0 -f campaign=full
 runs until 10 valid ones exist, and writes the medians. Each run rests 120 s to
 measure the idle baseline; an idle package rate above 1.0 W aborts the run before
 any stage (exit 90), since the bench is then not idle. Each stage runs under a
-wall-clock ceiling (build 1774 s, test 1280 s, the larger
+wall-clock ceiling (build 1774 s, test 2070 s, the larger
 of 1.5x the largest known wall and that wall plus 15 s); a stage that reaches
 it is killed with its container and the run exits 91 without a CSV, since a hung
 harness is not a measurement. A run that produced no valid CSV (exit 90, 91, or

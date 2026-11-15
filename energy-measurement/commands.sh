@@ -166,8 +166,11 @@ case "$STAGE" in
     # the build stage left (D-9)
     echo "=== cargo test: start $(date -u +%FT%TZ) ==="
     set +e
+    # --no-fail-fast is the one addition to the command: without network the
+    # integration target fails and the literal command would skip every later
+    # test target, which the hosted job runs (D-10).
     CARGO_PROFILE_DEV_DEBUG=0 \
-      cargo test --locked --features=panic-trace
+      cargo test --locked --features=panic-trace --no-fail-fast
     STAGE_EXIT=$?
     set -e
     echo "=== cargo test: end $(date -u +%FT%TZ) exit=${STAGE_EXIT} ==="
